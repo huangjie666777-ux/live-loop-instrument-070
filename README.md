@@ -1,9 +1,79 @@
 # Live Loop Instrument
 
-Svelte 5 and TypeScript project skeleton. Business features are not implemented.
+供乐手演奏与循环叠录的网页合成器：Svelte 5 + TypeScript + Web Audio。
+固定 **4/4 拍、两小节（共 8 拍）** 循环，可边弹边录、反复叠录。
 
-Node.js 22.19.0; dependencies are pinned in package.json and package-lock.json.
+## 启动
 
-- `npm run dev` starts Vite.
-- `npm run build` runs Svelte checks and the production build.
-- `npm test` runs tests added to this project.
+```bash
+npm install
+npm run dev      # 开发服务器（默认 http://localhost:5173）
+npm run build    # svelte-check 类型检查 + 生产构建
+npm test         # vitest 单元/调度测试（32 个）
+```
+
+打开页面后先点击 **“点击启用音频”**（浏览器自动播放策略要求用户手势），
+启用前不会发出任何声音。
+
+## 演奏
+
+- 屏幕键盘覆盖 **C4–B5（24 键）**，鼠标 / 触摸支持多指复音。
+- 电脑键位（两排，类似钢琴手位）：
+  - C4–B4：`Z S X D C V G B H N J M , L . ; /`
+  - C5–B5：`Q 2 W 3 E R 5`
+- 键盘自动重复（长按系统 repeat）被忽略；焦点在输入框、文本域等可编辑控件时按键不发声。
+- 音高按十二平均律计算，A4 = 440 Hz。
+- 鼠标 / 键盘 / 回放是**互相独立的来源**：同音可同时响，各自释放，互不截断。
+- 窗口失焦或收到 `pointercancel`（以及拖出键外松开）时自动释放所有现场按住的音，不会卡音。
+
+## 合成器
+
+- 波形：**正弦 / 方波 / 锯齿**（OscillatorNode）。
+- 包络：**起音 A、衰减 D、保持 S、释音 R** 与总音量实时可调。
+- 松键时从**当前包络电平**线性进入释音，避免“咔”的突变；释音结束后自动断开并回收音频节点。
+- 最多 **8 个声部**。新音到来时：先回收已释音的空闲声部；其次复用同 key；
+  最后才抢占“最早按下”的声部（被抢占声部立即静音断连）。
+
+## 循环、录制与叠录
+
+- 速度 **40–200 BPM**。播放中改速度不会立即打断当前圈，
+  界面显示“待生效 N（下一圈）”，在**下一圈边界**切换，不漏音、不重复触发。
+- 按钮：
+  - **▶ 播放**：从第 0 拍开始循环。
+  - **● 录制**：进入“等待录制”，从**下一圈起点**真正开始，并**替换**旧音符。
+  - **◐ 叠录**：同样从下一圈起点开始，但**保留**已有音符并追加新音符。
+  - **■ 停止**：结束未松开的录音（按当前拍长截断）、取消所有待发声、立即全部静音；再按播放从起点开始。
+  - **✕ 清空**：停止播放并删除全部循环音符。
+- 录制记录每个音的**按下位置（拍）与按住时长（拍）**；长音允许跨越圈边界，
+  边界处不会提前结束，下一圈在对应位置照常回放。
+- 录制时你按下的音立即作为监听发声；该监听声**不会被回放重触发**，
+  新录的音符从**下一次到达对应位置**时才由循环调度器播放。
+- 循环窗显示所有音符、4/4 两小节网格与红色播放头。
+
+## 调度方式
+
+节拍由 **Web Audio 音频时钟**驱动：调度器每 25ms 醒一次，
+把未来约 150ms 内的音符用 `OscillatorNode.start/stop(when)` 精确排入音频时钟，
+因此播放稳定、与画面帧率无关；播放头仅用于可视化（`requestAnimationFrame`）。
+
+## 代码结构
+
+```
+src/audio/notes.ts            十二平均律、音名、电脑键位映射、可编辑目标判断
+src/audio/voice-allocator.ts  纯逻辑：8 声部回收策略（可单测）
+src/audio/synth.ts            Web Audio 引擎：波形/ADSR/音量、独立来源、节点回收
+src/loop/recorder.ts          纯模型：armed/recording、record 替换 / overdub 保留、跨圈长音
+src/loop/timing.ts            纯函数：音频时钟 ↔ 绝对拍号、每圈速度段
+src/loop/transport.ts         音频时钟 lookahead 调度器、变速/停止/清空/播放头回调
+src/state/controller.svelte.ts  演奏输入与 UI 状态（$state），串联上述模块
+src/components/               PianoKeyboard / Controls / LoopDisplay
+tests/                        32 个 vitest 用例
+```
+
+## 录制后叠录的演示步骤
+
+1. 启用音频 → 点 **● 录制**（按钮旁出现“等待录制（下一圈）”）。
+2. 下一圈起点开始后，在键盘上弹一小段，松键后音符出现在循环窗；可继续弹到第二圈。
+3. 再点 **◐ 叠录**，状态显示“等待叠录（下一圈）”；下一圈起点后追加第二声部，
+   之前的音符仍然保留、继续循环播放。
+4. 想重来：点 **● 录制** 会在下一圈替换全部内容；点 **✕ 清空** 立即删除并停止。
